@@ -61,10 +61,8 @@ services:
         value: te-IN
       - key: AVATAR_PROVIDER
         value: none          # browser-animated portrait (free); "runway" for the hosted photoreal face
-      - key: RUNWAYML_API_SECRET   # only needed when AVATAR_PROVIDER=runway
-        sync: false
-      - key: RUNWAY_AVATAR_ID
-        sync: false
+      # Optional photoreal face: set AVATAR_PROVIDER=runway and add RUNWAYML_API_SECRET
+      # and RUNWAY_AVATAR_ID in the Render dashboard (Environment tab).
       - key: MAX_CALL_SECONDS
         value: "180"
       - key: VISION_ENABLED
