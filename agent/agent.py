@@ -158,7 +158,11 @@ async def entrypoint(ctx: JobContext) -> None:
     if eyes:
         ctx.add_shutdown_callback(eyes.aclose)
 
-    await _start_avatar(session, ctx)
+    try:
+        await _start_avatar(session, ctx)
+    except Exception as e:
+        # Never let the face service (credits, outage) kill the call: fall back to voice-only.
+        logger.warning("avatar unavailable, continuing voice-only: %s", e)
     await session.start(agent=VikataKavi(language, eyes), room=ctx.room)
 
     # Hard stop so a forgotten tab never burns credits.
