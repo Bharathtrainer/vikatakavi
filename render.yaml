@@ -60,8 +60,8 @@ services:
       - key: DEFAULT_LANGUAGE
         value: te-IN
       - key: AVATAR_PROVIDER
-        value: runway        # set to "none" to test voice-only without spending Runway credits
-      - key: RUNWAYML_API_SECRET
+        value: none          # browser-animated portrait (free); "runway" for the hosted photoreal face
+      - key: RUNWAYML_API_SECRET   # only needed when AVATAR_PROVIDER=runway
         sync: false
       - key: RUNWAY_AVATAR_ID
         sync: false

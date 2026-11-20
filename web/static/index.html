@@ -29,10 +29,12 @@
     background: #0b0907 center / cover no-repeat; border: 1px solid var(--line);
     box-shadow: 0 0 0 4px #1a1510, 0 20px 50px #0008;
   }
-  .stage video { width: 100%; height: 100%; object-fit: cover; display: block; }
-  .stage .placeholder { position: absolute; left: 0; right: 0; bottom: 0; padding: 40px 16px 12px; color: var(--muted); background: linear-gradient(180deg, #0000, #000c); pointer-events: none; }
+  .stage > video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; z-index: 1; }
+  .stage .backdrop { position: absolute; inset: -40px; background: url('/static/vikatakavi.png') center / cover; filter: blur(28px) brightness(.95); }
+  .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .stage .placeholder { z-index: 2; position: absolute; left: 0; right: 0; bottom: 0; padding: 40px 16px 12px; color: var(--muted); background: linear-gradient(180deg, #0000, #000c); pointer-events: none; }
   .stage .placeholder b { font-size: 1.3rem; color: var(--gold); font-family: "Noto Serif", serif; }
-  .badge { position: absolute; top: 12px; left: 12px; padding: 4px 10px; border-radius: 99px; font-size: .75rem; background: #000a; border: 1px solid var(--line); }
+  .badge { z-index: 2; position: absolute; top: 12px; left: 12px; padding: 4px 10px; border-radius: 99px; font-size: .75rem; background: #000a; border: 1px solid var(--line); }
   .badge.live { color: var(--ok); border-color: var(--ok); }
   .timer { position: absolute; top: 12px; right: 12px; padding: 4px 10px; border-radius: 99px; font-size: .75rem; background: #000a; font-variant-numeric: tabular-nums; }
   .selfview { position: absolute; right: 12px; bottom: 40px; width: 22%; min-width: 120px; aspect-ratio: 4/3; border-radius: 10px; overflow: hidden; border: 2px solid var(--gold); background: #000; z-index: 2; }
@@ -72,7 +74,9 @@
 </header>
 
 <main>
-  <section class="stage" id="stage" style="background-image:url('/static/vikatakavi.png')">
+  <section class="stage" id="stage">
+    <div class="backdrop"></div>
+    <canvas id="portrait"></canvas>
     <div class="placeholder" id="placeholder">
       <div><b>వికటకవి</b></div>
     </div>
@@ -107,10 +111,26 @@
 
 <footer>VikataKavi is an AI character inspired by the folk tales of Tenali Ramakrishna. Stories are legends, and the AI can make mistakes. Your voice — and your camera picture, only while the camera is on — is processed by third-party AI services to run the conversation. Nothing is recorded by this page.</footer>
 
+<script src="/static/talking-portrait.js"></script>
 <script>
 const { Room, RoomEvent, Track } = LivekitClient;
 const $ = (id) => document.getElementById(id);
-let room = null, lang = "te-IN", timerId = null, started = 0;
+let room = null, lang = "te-IN", timerId = null, started = 0, audioCtx = null;
+
+// Living portrait: breathes and blinks on the page, lip-syncs to VikataKavi's voice in calls.
+let portrait = null;
+(async () => {
+  try {
+    portrait = await new TalkingPortrait($("portrait"), {
+      image: "/static/vikatakavi.png", rig: "/static/vikatakavi.rig.json",
+    }).init();
+    portrait.start();
+  } catch (e) {
+    console.warn("animated portrait unavailable, showing still image", e);
+    $("portrait").hidden = true;
+    $("stage").style.background = "url('/static/vikatakavi.png') center 30% / cover";
+  }
+})();
 
 fetch("/api/config").then(r => r.json()).then(c => { $("codeWrap").hidden = !c.requires_access_code; });
 
@@ -143,6 +163,9 @@ function tick() {
 async function start() {
   $("start").disabled = true;
   setStatus("Connecting… / కనెక్ట్ అవుతోంది…");
+  // Audio analysis needs an AudioContext created inside the click (browser autoplay rules).
+  audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+  audioCtx.resume();
   try {
     const res = await fetch("/api/session", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -155,16 +178,26 @@ async function start() {
 
     room.on(RoomEvent.TrackSubscribed, (track) => {
       if (track.kind === Track.Kind.Video) {
+        // A hosted avatar (e.g. Runway) is streaming video: show it over the portrait.
         const v = track.attach(); v.playsInline = true;
-        $("stage").querySelectorAll("video").forEach(x => x.remove());
+        $("stage").querySelectorAll(":scope > video").forEach(x => x.remove());
         $("stage").prepend(v);
+        if (portrait) portrait.stop();
         $("placeholder").hidden = true;
         setBadge("live", true);
       } else if (track.kind === Track.Kind.Audio) {
         const a = track.attach(); a.hidden = true; document.body.appendChild(a);
+        if (portrait) portrait.attachAudio(track.mediaStreamTrack, audioCtx);   // lip sync
       }
     });
-    room.on(RoomEvent.TrackUnsubscribed, (track) => track.detach().forEach(el => el.remove()));
+    room.on(RoomEvent.TrackUnsubscribed, (track) => {
+      track.detach().forEach(el => el.remove());
+      if (track.kind === Track.Kind.Video && portrait) portrait.start();
+    });
+    // Look attentive (and nod when they finish) while the user is talking.
+    room.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
+      if (portrait) portrait.setListening(speakers.some(p => p.identity === room.localParticipant.identity));
+    });
 
     // Live transcripts from the agent (LiveKit text streams)
     room.registerTextStreamHandler("lk.transcription", async (reader, info) => {
@@ -175,7 +208,10 @@ async function start() {
     });
 
     room.on(RoomEvent.ParticipantConnected, (p) => {
-      if (p.isAgent) { setStatus("VikataKavi joined — say నమస్కారం!"); setBadge("agent joined"); }
+      if (p.isAgent) {
+        setStatus("VikataKavi joined — say నమస్కారం!"); setBadge("live", true);
+        $("placeholder").hidden = true;
+      }
     });
     room.on(RoomEvent.Disconnected, () => cleanup("Call ended. / సంభాషణ ముగిసింది."));
 
@@ -199,8 +235,9 @@ function cleanup(msg) {
   if (timerId) clearInterval(timerId);
   timerId = null; $("timer").hidden = true;
   if (room) { const r = room; room = null; r.disconnect(); }
-  $("stage").querySelectorAll("video").forEach(x => x.remove());
+  $("stage").querySelectorAll(":scope > video").forEach(x => x.remove());
   document.querySelectorAll("body > audio").forEach(x => x.remove());
+  if (portrait) { portrait.detachAudio(); portrait.setListening(false); portrait.start(); }
   $("placeholder").hidden = false; setBadge("offline");
   $("start").textContent = "Start conversation"; $("start").classList.remove("end"); $("start").disabled = false;
   $("mute").hidden = true; $("mute").textContent = "Mute";

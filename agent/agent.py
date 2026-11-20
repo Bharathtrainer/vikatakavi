@@ -46,9 +46,12 @@ STT_MODEL = os.getenv("SARVAM_STT_MODEL", "saaras:v3")
 TTS_MODEL = os.getenv("SARVAM_TTS_MODEL", "bulbul:v3")
 TTS_SPEAKER = os.getenv("SARVAM_TTS_SPEAKER", "aditya")  # mature male storyteller voice
 TTS_PACE = float(os.getenv("SARVAM_TTS_PACE", "1.0"))
-# AVATAR_PROVIDER: "runway" (prototype), "none" (voice only, zero avatar cost),
-# later "selfhosted" (your own GPU lip-sync service).
-AVATAR_PROVIDER = os.getenv("AVATAR_PROVIDER", "runway").lower()
+# AVATAR_PROVIDER:
+#   "none"       -> default: the browser animates the portrait itself (lip sync, blinks,
+#                   head motion) from the agent's voice. Zero avatar cost.
+#   "runway"     -> hosted photoreal avatar (Runway Characters, paid per minute).
+#   "selfhosted" -> phase 2: your own GPU neural lip-sync worker.
+AVATAR_PROVIDER = os.getenv("AVATAR_PROVIDER", "none").lower()
 RUNWAY_AVATAR_ID = os.getenv("RUNWAY_AVATAR_ID", "")
 # Runway sessions are capped at 5 minutes; keep the prototype cheap.
 MAX_CALL_SECONDS = int(os.getenv("MAX_CALL_SECONDS", "180"))
@@ -109,7 +112,7 @@ def _language_from_metadata(ctx: JobContext) -> str:
 
 async def _start_avatar(session: AgentSession, ctx: JobContext) -> None:
     if AVATAR_PROVIDER == "none":
-        logger.info("AVATAR_PROVIDER=none: voice-only mode")
+        logger.info("AVATAR_PROVIDER=none: browser-animated portrait")
         return
     if AVATAR_PROVIDER == "runway":
         if not RUNWAY_AVATAR_ID:

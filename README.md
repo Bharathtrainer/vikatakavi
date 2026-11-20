@@ -8,9 +8,12 @@ Telugu or English. He answers with a realistic talking face.
 ```
 Browser ──WebRTC──► LiveKit Cloud room ◄──── vikatakavi-agent (Render worker)
    ▲                     ▲                    ├─ Sarvam Saaras  : speech → text (te/en, code-mixed)
-   │ token               │ avatar video       ├─ Sarvam 105B    : persona brain
-vikatakavi-web       Runway Characters        └─ Sarvam Bulbul  : text → Telugu speech
-(Render web)         (phase 2: your own GPU)
+   │ token               │ avatar video       │                                          ├─ Sarvam 105B    : persona brain
+vikatakavi-web                                ├─ Sarvam Bulbul  : text → Telugu speech
+(Render web)                                  └─ Sarvam gemma4  : eyes (camera, on request)
+
+Face: the browser animates the portrait itself (WebGL mesh: lip sync from his voice,
+blinks, gaze, head sway). Optional: Runway Characters (paid) or a GPU neural avatar later.
 ```
 
 ## Repository layout
@@ -18,7 +21,10 @@ vikatakavi-web       Runway Characters        └─ Sarvam Bulbul  : text → T
 | Path | What it is |
 |---|---|
 | `web/app.py` | FastAPI: serves the page and issues LiveKit tokens that dispatch the agent |
-| `web/static/index.html` | The call page: language toggle, video stage, live transcript |
+| `web/static/index.html` | The call page: living portrait, controls, camera, collapsible transcript |
+| `web/static/talking-portrait.js` | Browser face animation: lip sync from audio, blinks, gaze, head motion |
+| `web/static/vikatakavi.rig.json` | Face rig for the portrait (generated) |
+| `tools/build_face_rig.py` | Regenerates the rig when you change the portrait |
 | `agent/agent.py` | LiveKit agent: Sarvam STT/LLM/TTS and the pluggable avatar layer |
 | `agent/persona.py` | VikataKavi's character, safety rules and greetings |
 | `agent/vision.py` | His eyes: keeps the latest camera frame in memory and describes it on demand |
@@ -46,8 +52,17 @@ cd web && uvicorn app:app --reload --port 8000                         # termina
 # open http://localhost:8000
 ```
 
-Tip: set `AVATAR_PROVIDER=none` while tuning the persona and Telugu voice. You get the
-full voice conversation with no Runway credits spent.
+`AVATAR_PROVIDER=none` (the default) uses the free browser-animated portrait. Set it to
+`runway` only if you want the hosted photoreal face and have Runway credits.
+
+### Changing the portrait
+
+Replace `web/static/vikatakavi.png`, then rebuild the face rig (Python 3.9–3.12):
+
+```bash
+pip install "mediapipe==0.10.14" "numpy<2" pillow scipy
+python tools/build_face_rig.py web/static/vikatakavi.png web/static/vikatakavi.rig.json
+```
 
 ## Deploy on Render
 
