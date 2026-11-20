@@ -1,0 +1,73 @@
+# Render Blueprint — VikataKavi prototype (Anvaya AI Lab)
+# Deploy: Render Dashboard -> New -> Blueprint -> pick this repo.
+# Secrets marked `sync: false` are entered once in the Render dashboard.
+
+envVarGroups:
+  - name: vikatakavi-shared
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.7"
+      - key: AGENT_NAME
+        value: vikatakavi
+
+services:
+  # 1) Web: call page + token endpoint
+  - type: web
+    name: vikatakavi-web
+    runtime: python
+    region: singapore        # closest Render region to India
+    plan: free
+    rootDir: web
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /healthz
+    envVars:
+      - fromGroup: vikatakavi-shared
+      - key: LIVEKIT_URL
+        sync: false          # wss://<your-project>.livekit.cloud
+      - key: LIVEKIT_API_KEY
+        sync: false
+      - key: LIVEKIT_API_SECRET
+        sync: false
+      - key: ACCESS_CODE
+        sync: false          # share this code only with testers
+      - key: CALLS_PER_HOUR_PER_IP
+        value: "6"
+
+  # 2) Worker: the VikataKavi conversational agent (Sarvam + avatar)
+  - type: worker
+    name: vikatakavi-agent
+    runtime: python
+    region: singapore
+    plan: standard           # 2 GB RAM; the VAD model + agent processes need >512 MB
+    rootDir: agent
+    buildCommand: pip install -r requirements.txt && python agent.py download-files
+    startCommand: python agent.py start
+    envVars:
+      - fromGroup: vikatakavi-shared
+      - key: LIVEKIT_URL
+        sync: false          # wss://<your-project>.livekit.cloud
+      - key: LIVEKIT_API_KEY
+        sync: false
+      - key: LIVEKIT_API_SECRET
+        sync: false
+      - key: SARVAM_API_KEY
+        sync: false
+      - key: SARVAM_LLM_MODEL
+        value: sarvam-105b-conversations
+      - key: SARVAM_TTS_SPEAKER
+        value: aditya
+      - key: DEFAULT_LANGUAGE
+        value: te-IN
+      - key: AVATAR_PROVIDER
+        value: runway        # set to "none" to test voice-only without spending Runway credits
+      - key: RUNWAYML_API_SECRET
+        sync: false
+      - key: RUNWAY_AVATAR_ID
+        sync: false
+      - key: MAX_CALL_SECONDS
+        value: "180"
+      - key: VISION_ENABLED
+        value: "true"
+      - key: SARVAM_VISION_MODEL
+        value: gemma4
