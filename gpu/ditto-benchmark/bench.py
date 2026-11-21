@@ -36,6 +36,20 @@ SR = 16000
 CHUNK = (3, 5, 2)          # Ditto online chunk: 3 past, 5 new, 2 future frames (40 ms each)
 
 
+# Framing / motion presets for VikataKavi's portrait (shaved crown + tuft + ears).
+PRESETS = {
+    # Ditto defaults: face-sized crop, full head pose. Crown/ears stay frozen.
+    "default": {},
+    # Bigger crop moved up: the whole head (crown, tuft, ears) moves together.
+    "wholehead": {"crop_scale": 3.0, "crop_vy_ratio": -0.2, "max_size": 1024},
+    # Head pose fixed; only lips/eyes/brows move. No sliding, but no nods.
+    "exp_only": {"use_d_keys": ["exp"], "max_size": 1024},
+    # Whole head + gentler motion (head pose at 50%).
+    "wholehead_soft": {"crop_scale": 3.0, "crop_vy_ratio": -0.2, "max_size": 1024,
+                       "use_d_keys": {"exp": 1.0, "pitch": 0.5, "yaw": 0.5, "roll": 0.5, "t": 0.5}},
+}
+
+
 def trt_dir() -> str:
     env = os.path.expanduser("~/.ditto_bench_env")
     if os.path.exists(env):
@@ -76,13 +90,13 @@ def gpu_name() -> str:
         return "unknown"
 
 
-def run_offline(sdk_cls, cfg, root, image, audio_path, out_path) -> dict:
+def run_offline(sdk_cls, cfg, root, image, audio_path, out_path, setup_kwargs=None) -> dict:
     t = time.perf_counter()
     sdk = sdk_cls(cfg, root)
     load_s = time.perf_counter() - t
 
     t = time.perf_counter()
-    sdk.setup(image, out_path)
+    sdk.setup(image, out_path, **(setup_kwargs or {}))
     setup_s = time.perf_counter() - t
 
     audio, _ = librosa.load(audio_path, sr=SR)
@@ -166,7 +180,17 @@ def main() -> None:
     ap.add_argument("--image", default=os.path.join(HERE, "../../web/static/vikatakavi.png"))
     ap.add_argument("--clips", default="te,en")
     ap.add_argument("--pytorch", action="store_true", help="also benchmark the PyTorch model")
+    ap.add_argument("--modes", default="offline,online", help="offline,online")
+    ap.add_argument("--preset", default="default", choices=sorted(PRESETS),
+                    help="framing/motion preset (see PRESETS in bench.py)")
+    ap.add_argument("--setup", default="", help='extra Ditto setup kwargs as JSON, e.g. \'{"crop_scale": 3.0}\'')
     args = ap.parse_args()
+    extra = dict(PRESETS[args.preset])
+    if args.setup:
+        extra.update(json.loads(args.setup))
+    if isinstance(extra.get("use_d_keys"), list):
+        extra["use_d_keys"] = tuple(extra["use_d_keys"])
+    tag = args.preset if not args.setup else args.preset + "-custom"
 
     image = os.path.abspath(args.image)
     os.makedirs(os.path.join(HERE, "results"), exist_ok=True)
@@ -180,29 +204,33 @@ def main() -> None:
         if not os.path.exists(need):
             sys.exit(f"Missing {need}\nThe model download did not finish - run `bash setup.sh` again until it says 'Setup complete'.")
     variants = [
-        ("trt", OfflineSDK, f"{ck}/ditto_cfg/v0.4_hubert_cfg_trt.pkl", trt, "offline", {}),
-        ("trt", OnlineSDK, f"{ck}/ditto_cfg/v0.4_hubert_cfg_trt_online.pkl", trt, "online", {}),
+        ("trt", OfflineSDK, f"{ck}/ditto_cfg/v0.4_hubert_cfg_trt.pkl", trt, "offline", dict(extra)),
+        ("trt", OnlineSDK, f"{ck}/ditto_cfg/v0.4_hubert_cfg_trt_online.pkl", trt, "online", dict(extra)),
     ]
     if args.pytorch:
         pt_cfg, pt_root = f"{ck}/ditto_cfg/v0.4_hubert_cfg_pytorch.pkl", f"{ck}/ditto_pytorch"
         variants += [
-            ("pytorch", OfflineSDK, pt_cfg, pt_root, "offline", {}),
-            ("pytorch", OnlineSDK, pt_cfg, pt_root, "online", {"online_mode": True}),
+            ("pytorch", OfflineSDK, pt_cfg, pt_root, "offline", dict(extra)),
+            ("pytorch", OnlineSDK, pt_cfg, pt_root, "online", {**extra, "online_mode": True}),
         ]
+    modes = set(args.modes.split(","))
+    variants = [v for v in variants if v[4] in modes]
 
-    report = {"gpu": gpu_name(), "portrait": os.path.basename(image), "runs": []}
+    report = {"gpu": gpu_name(), "portrait": os.path.basename(image), "preset": args.preset,
+              "setup_kwargs": {k: list(v) if isinstance(v, tuple) else v for k, v in extra.items()},
+              "runs": []}
     print("GPU:", report["gpu"])
     for clip in args.clips.split(","):
         audio = os.path.join(HERE, "audio", f"{clip}.wav")
         if not os.path.exists(audio):
             sys.exit(f"missing {audio} - run make_test_audio.py first")
         for backend, cls, cfg, root, mode, kw in variants:
-            out = os.path.join(HERE, "results", f"{clip}_{backend}_{mode}.mp4")
+            out = os.path.join(HERE, "results", f"{clip}_{backend}_{mode}_{tag}.mp4")
             label = f"{clip} / {backend} / {mode}"
             print(f"\n=== {label} ===")
             try:
                 if mode == "offline":
-                    r = run_offline(cls, cfg, root, image, audio, out)
+                    r = run_offline(cls, cfg, root, image, audio, out, setup_kwargs=kw)
                 else:
                     r = run_online(cls, cfg, root, image, audio, out, paced=True, setup_kwargs=kw)
                 r.update(clip=clip, backend=backend)
@@ -215,7 +243,7 @@ def main() -> None:
                 print("FAILED:", r["error"])
             report["runs"].append(r)
 
-    path = os.path.join(HERE, "results", "results.json")
+    path = os.path.join(HERE, "results", f"results_{tag}.json")
     with open(path, "w") as f:
         json.dump(report, f, indent=2)
     print(f"\nSaved {path}")
