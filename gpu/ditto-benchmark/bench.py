@@ -176,6 +176,9 @@ def main() -> None:
 
     ck = os.path.join(DITTO_DIR, "checkpoints")
     trt = trt_dir()
+    for need in (f"{ck}/ditto_cfg/v0.4_hubert_cfg_trt.pkl", trt):
+        if not os.path.exists(need):
+            sys.exit(f"Missing {need}\nThe model download did not finish - run `bash setup.sh` again until it says 'Setup complete'.")
     variants = [
         ("trt", OfflineSDK, f"{ck}/ditto_cfg/v0.4_hubert_cfg_trt.pkl", trt, "offline", {}),
         ("trt", OnlineSDK, f"{ck}/ditto_cfg/v0.4_hubert_cfg_trt_online.pkl", trt, "online", {}),
@@ -205,7 +208,10 @@ def main() -> None:
                 r.update(clip=clip, backend=backend)
                 print(json.dumps(r, indent=2))
             except Exception as e:  # keep going so one failure doesn't hide the rest
-                r = {"clip": clip, "backend": backend, "mode": mode, "error": repr(e)[:400]}
+                import traceback
+                traceback.print_exc()
+                detail = f"{e!r} {getattr(e, 'filename', '') or ''}".strip()
+                r = {"clip": clip, "backend": backend, "mode": mode, "error": detail[:400]}
                 print("FAILED:", r["error"])
             report["runs"].append(r)
 
