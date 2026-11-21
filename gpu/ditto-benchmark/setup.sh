@@ -13,9 +13,18 @@ CC=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1 | tr -d 
 echo "compute capability: $CC"
 
 echo "== 2/5 System packages =="
-if command -v apt-get >/dev/null; then
-  sudo apt-get update -y && sudo apt-get install -y git git-lfs ffmpeg wget
+SUDO=""; [ "$(id -u)" -ne 0 ] && SUDO="sudo"
+missing=""
+for c in git git-lfs ffmpeg wget; do command -v "$c" >/dev/null || missing="$missing $c"; done
+if [ -n "$missing" ] && command -v apt-get >/dev/null; then
+  # Unrelated broken repos/packages on the machine must not stop us.
+  $SUDO apt-get update -y || echo "warning: apt-get update reported errors; continuing"
+  $SUDO apt-get install -y $missing || echo "warning: apt-get install reported errors; checking tools"
 fi
+for c in git git-lfs ffmpeg wget; do
+  command -v "$c" >/dev/null || { echo "ERROR: '$c' is still missing. Install it and re-run."; exit 1; }
+done
+echo "git, git-lfs, ffmpeg, wget: OK"
 git lfs install
 
 echo "== 3/5 Miniconda =="
