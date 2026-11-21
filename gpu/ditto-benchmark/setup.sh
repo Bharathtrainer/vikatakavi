@@ -50,6 +50,17 @@ else
 fi
 conda activate ditto
 pip install -q requests
+
+# TensorRT 8.6 needs cuDNN 8, while this PyTorch uses cuDNN 9. Keep cuDNN 8 in its own
+# folder and put it on the library path whenever the 'ditto' env is activated.
+CUDNN8_DIR="$HOME/cudnn8"
+if [ ! -f "$CUDNN8_DIR/nvidia/cudnn/lib/libcudnn.so.8" ]; then
+  pip install -q --no-deps --target "$CUDNN8_DIR" "nvidia-cudnn-cu12==8.9.7.29"
+fi
+mkdir -p "$CONDA_PREFIX/etc/conda/activate.d"
+echo "export LD_LIBRARY_PATH=\"$CUDNN8_DIR/nvidia/cudnn/lib:\${LD_LIBRARY_PATH:-}\"" \
+  > "$CONDA_PREFIX/etc/conda/activate.d/cudnn8.sh"
+set +u; conda deactivate; conda activate ditto; set -u   # re-activate to apply the new path
 python - <<'PY'
 import torch, tensorrt, librosa
 print("torch", torch.__version__, "| CUDA available:", torch.cuda.is_available(),
