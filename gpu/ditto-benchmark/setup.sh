@@ -40,13 +40,23 @@ conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r 
 
 echo "== 4/5 Ditto code + Python environment (10-15 min first time) =="
 [ -d "$DITTO_DIR/.git" ] || git clone --depth 1 https://github.com/antgroup/ditto-talkinghead "$DITTO_DIR"
+# TensorRT 8.6.1 wheels now live on NVIDIA's own index, not PyPI.
+export PIP_EXTRA_INDEX_URL="https://pypi.nvidia.com"
 if conda env list | grep -qE '^ditto\s'; then
-  echo "conda env 'ditto' already exists"
+  echo "conda env 'ditto' exists: updating it (repairs a previously failed install)"
+  conda env update -n ditto -f "$DITTO_DIR/environment.yaml"
 else
   conda env create -f "$DITTO_DIR/environment.yaml" -n ditto
 fi
 conda activate ditto
 pip install -q requests
+python - <<'PY'
+import torch, tensorrt, librosa
+print("torch", torch.__version__, "| CUDA available:", torch.cuda.is_available(),
+      "| GPU:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "-")
+print("tensorrt", tensorrt.__version__, "| librosa", librosa.__version__)
+assert torch.cuda.is_available(), "PyTorch cannot see the GPU"
+PY
 
 echo "== 5/5 Model checkpoints (several GB) =="
 if [ ! -d "$DITTO_DIR/checkpoints/ditto_cfg" ]; then
