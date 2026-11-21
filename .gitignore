@@ -2,3 +2,5 @@
 .venv/
 __pycache__/
 *.pyc
+gpu/ditto-benchmark/results/
+gpu/ditto-benchmark/audio/

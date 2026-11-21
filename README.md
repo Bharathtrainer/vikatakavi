@@ -31,6 +31,7 @@ blinks, gaze, head sway). Optional: Runway Characters (paid) or a GPU neural ava
 | `render.yaml` | Render Blueprint for both services |
 | `docs/portrait-prompt.md` | How to make the realistic portrait and the Runway Character |
 | `docs/gpu-migration.md` | Phase 2: moving the face to your own GPU |
+| `gpu/ditto-benchmark/` | One-hour GPU test of Ditto (neural talking head) with VikataKavi's portrait and voice |
 
 ## Accounts you need
 
