@@ -44,6 +44,14 @@ PRESETS = {
     "wholehead": {"crop_scale": 3.0, "crop_vy_ratio": -0.2, "max_size": 1024},
     # Head pose fixed; only lips/eyes/brows move. No sliding, but no nods.
     "exp_only": {"use_d_keys": ["exp"], "max_size": 1024},
+    # Lively storyteller: whole head moving, stronger expressions, breathing shoulders + sway.
+    "lively": {"crop_scale": 3.0, "crop_vy_ratio": -0.2, "max_size": 1024,
+               "use_d_keys": {"exp": 1.25, "pitch": 0.8, "yaw": 0.8, "roll": 0.8, "t": 0.8},
+               "body_motion": 1.0},
+    # Calmer version of the same.
+    "lively_soft": {"crop_scale": 3.0, "crop_vy_ratio": -0.2, "max_size": 1024,
+                    "use_d_keys": {"exp": 1.1, "pitch": 0.5, "yaw": 0.5, "roll": 0.5, "t": 0.5},
+                    "body_motion": 0.6},
     # Whole head + gentler motion (head pose at 50%).
     "wholehead_soft": {"crop_scale": 3.0, "crop_vy_ratio": -0.2, "max_size": 1024,
                        "use_d_keys": {"exp": 1.0, "pitch": 0.5, "yaw": 0.5, "roll": 0.5, "t": 0.5}},
@@ -59,14 +67,80 @@ def trt_dir() -> str:
     return os.path.join(DITTO_DIR, "checkpoints/ditto_trt_Ampere_Plus")
 
 
+class BodyMotion:
+    """Adds breathing (shoulders rise/fall) and a gentle body sway on top of Ditto's frames.
+
+    Ditto animates only the head crop, so shoulders/torso would be frozen. This warps each
+    finished frame with a smooth field: shoulders follow a ~15 breaths/min cycle, the whole
+    figure sways slightly, and both grow a little while VikataKavi is speaking.
+    Uses the browser-face rig (chin/face position) to know where the shoulders are.
+    """
+
+    def __init__(self, audio, rig_path, strength=1.0):
+        import cv2  # noqa: F401  (opencv is in the ditto env)
+        self.strength = strength
+        rig = json.load(open(rig_path))
+        self.rig = rig
+        # speech envelope per video frame (0..1)
+        hop = SR // FPS
+        n = int(math.ceil(len(audio) / hop))
+        rms = np.array([np.sqrt(np.mean(audio[i * hop:(i + 1) * hop] ** 2) + 1e-9) for i in range(n)])
+        rms = rms / (np.percentile(rms, 95) + 1e-9)
+        env = np.clip(rms, 0, 1)
+        k = np.ones(9) / 9                                   # ~0.36 s smoothing
+        self.env = np.convolve(env, k, mode="same")
+
+    def _prepare(self, h, w):
+        import cv2
+        s = w / self.rig["w"]
+        f = self.rig["face"]
+        chin = f["chinY"] * s
+        fh = f["fh"] * s
+        yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+        # body weight: 0 above the chin, ramps to 1 over the neck into the shoulders
+        t = np.clip((yy - (chin + 0.05 * fh)) / (0.45 * fh), 0, 1)
+        self.body_w = (t * t * (3 - 2 * t)).astype(np.float32)
+        self.xx, self.yy = xx, yy
+        self.h, self.w, self.fh = h, w, fh
+        self.pivot = (w / 2.0, h * 1.15)                     # sway pivots below the frame (hips)
+        self._cv2 = cv2
+
+    def __call__(self, img, k):
+        h, w = img.shape[:2]
+        if not hasattr(self, "xx") or self.h != h or self.w != w:
+            self._prepare(h, w)
+        cv2 = self._cv2
+        t = k / FPS
+        e = float(self.env[min(k, len(self.env) - 1)]) if len(self.env) else 0.0
+        st = self.strength
+        # breathing: shoulders lift ~0.5% of frame height, a bit more when talking
+        breath = math.sin(2 * math.pi * t / 4.0) * (0.004 + 0.002 * e) * self.h * st
+        # sway: slow idle drift + livelier rhythm while speaking (radians)
+        ang = (0.0035 * math.sin(2 * math.pi * t / 6.5) + 0.006 * e * math.sin(2 * math.pi * t / 2.2)) * st
+        shift_x = (0.003 * math.sin(2 * math.pi * t / 7.3 + 1.0)) * self.w * st
+        zoom = 1.025                                         # hides the edges while moving
+        px, py = self.pivot
+        ca, sa = math.cos(-ang), math.sin(-ang)
+        # inverse map: for each output pixel, where to sample in the source
+        x0 = (self.xx - self.w / 2) / zoom + self.w / 2
+        y0 = (self.yy - self.h / 2) / zoom + self.h / 2
+        dx, dy = x0 - px - shift_x, y0 - py
+        sx = px + dx * ca - dy * sa
+        sy = py + dx * sa + dy * ca + breath * self.body_w
+        return cv2.remap(img, sx.astype(np.float32), sy.astype(np.float32),
+                         interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+
+
 class TimedWriter:
     """Wraps Ditto's video writer to timestamp every finished frame."""
 
-    def __init__(self, inner):
-        self.inner, self.times = inner, []
+    def __init__(self, inner, body=None):
+        self.inner, self.times, self.body = inner, [], body
 
     def __call__(self, img, fmt="rgb"):
         self.times.append(time.perf_counter())
+        if self.body is not None:
+            img = self.body(img, len(self.times) - 1)
         return self.inner(img, fmt=fmt)
 
     def close(self):
@@ -90,7 +164,17 @@ def gpu_name() -> str:
         return "unknown"
 
 
+RIG = os.path.join(HERE, "../../web/static/vikatakavi.rig.json")
+
+
+def _split(setup_kwargs):
+    kw = dict(setup_kwargs or {})
+    body = kw.pop("body_motion", 0)
+    return kw, float(body or 0)
+
+
 def run_offline(sdk_cls, cfg, root, image, audio_path, out_path, setup_kwargs=None) -> dict:
+    setup_kwargs, body = _split(setup_kwargs)
     t = time.perf_counter()
     sdk = sdk_cls(cfg, root)
     load_s = time.perf_counter() - t
@@ -102,7 +186,7 @@ def run_offline(sdk_cls, cfg, root, image, audio_path, out_path, setup_kwargs=No
     audio, _ = librosa.load(audio_path, sr=SR)
     dur = len(audio) / SR
     sdk.setup_Nd(N_d=math.ceil(dur * FPS))
-    sdk.writer = TimedWriter(sdk.writer)
+    sdk.writer = TimedWriter(sdk.writer, BodyMotion(audio, RIG, body) if body else None)
 
     t0 = time.perf_counter()
     sdk.audio2motion_queue.put(sdk.wav2feat.wav2feat(audio))
@@ -119,6 +203,7 @@ def run_offline(sdk_cls, cfg, root, image, audio_path, out_path, setup_kwargs=No
 
 
 def run_online(sdk_cls, cfg, root, image, audio_path, out_path, paced=True, setup_kwargs=None) -> dict:
+    setup_kwargs, body = _split(setup_kwargs)
     t = time.perf_counter()
     sdk = sdk_cls(cfg, root)
     load_s = time.perf_counter() - t
@@ -132,7 +217,7 @@ def run_online(sdk_cls, cfg, root, image, audio_path, out_path, paced=True, setu
     audio, _ = librosa.load(audio_path, sr=SR)
     dur = len(audio) / SR
     sdk.setup_Nd(N_d=math.ceil(dur * FPS))
-    sdk.writer = TimedWriter(sdk.writer)
+    sdk.writer = TimedWriter(sdk.writer, BodyMotion(audio, RIG, body) if body else None)
 
     padded = np.concatenate([np.zeros((CHUNK[0] * 640,), dtype=np.float32), audio], 0)
     split_len = int(sum(CHUNK) * 0.04 * SR) + 80
@@ -183,7 +268,7 @@ def main() -> None:
     ap.add_argument("--modes", default="offline,online", help="offline,online")
     ap.add_argument("--preset", default="default", choices=sorted(PRESETS),
                     help="framing/motion preset (see PRESETS in bench.py)")
-    ap.add_argument("--setup", default="", help='extra Ditto setup kwargs as JSON, e.g. \'{"crop_scale": 3.0}\'')
+    ap.add_argument("--setup", default="", help='extra setup kwargs as JSON, e.g. \'{"crop_scale": 3.0, "emo": 3, "body_motion": 1.5}\'')
     args = ap.parse_args()
     extra = dict(PRESETS[args.preset])
     if args.setup:

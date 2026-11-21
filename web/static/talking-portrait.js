@@ -98,6 +98,14 @@
       this.posBuf = gl.createBuffer();
       this.pos = new Float32Array(n * 2);
       this.cur = rig.verts.map(p => [p[0], p[1]]);
+      // body weight: 0 above the chin, 1 over the shoulders; image border stays put
+      const F = rig.face;
+      this.bodyW = rig.verts.map(([x, y]) => {
+        const onBorder = x <= 0.5 || y <= 0.5 || x >= rig.w - 0.5 || y >= rig.h - 0.5;
+        if (onBorder) return 0;
+        const t = clamp((y - (F.chinY + 0.05 * F.fh)) / (0.45 * F.fh), 0, 1);
+        return t * t * (3 - 2 * t);
+      });
       const bind = (data, loc, size) => {
         const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b);
         gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
@@ -236,6 +244,11 @@
       }
       ty += st.nod * F.fh * 0.025;
 
+      // body: breathing lifts the shoulders (~15 breaths/min), slight sway, livelier when speaking
+      const energy = st.open;
+      const breath = Math.sin(t * 2 * Math.PI / 4.0) * (0.004 + 0.002 * energy) * rig.h;
+      const bodySway = (0.003 * Math.sin(t * 2 * Math.PI / 6.5) + 0.004 * energy * Math.sin(t * 2 * Math.PI / 2.2)) * F.fw;
+
       // deform
       const V = rig.verts, cur = this.cur, n = V.length;
       const jawD = st.open * 0.085 * F.fh * (1 - 0.35 * st.round);
@@ -249,6 +262,8 @@
         x += rig.round[i] * rnd;
         y += rig.blink[i] * st.blink;
         if (ex[i] !== undefined) { x += st.gx * ex[i] * 0.55; y += st.gy * ex[i] * 0.40; }
+        const bw = this.bodyW[i];
+        if (bw > 0) { y -= breath * bw; x += bodySway * bw; }
         const hw = rig.head[i];
         if (hw > 0) {
           const dx = x - px, dy = y - py;
